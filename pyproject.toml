@@ -41,6 +41,7 @@ dev-mode-dirs = ["."]
 "preview.py" = "preview.py"
 "run_test.py" = "run_test.py"
 "export_ntl_open_pool.py" = "export_ntl_open_pool.py"
+"author_set.py" = "author_set.py"
 
 [tool.uv]
 package = true

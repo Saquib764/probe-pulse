@@ -40,6 +40,12 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--config", type=Path, default=CONFIG_PATH)
     p_run.add_argument("--checkpoint", type=Path, default=None)
 
+    p_fetch = sub.add_parser(
+        "fetch-data",
+        help="Download train/test CSVs from Hugging Face (config data.dataset_id)",
+    )
+    p_fetch.add_argument("--config", type=Path, default=CONFIG_PATH)
+
     p_export = sub.add_parser(
         "export-data",
         help="Export ntl_open_pool.parquet to data.train_csv (one-off; training reads CSV only)",
@@ -77,6 +83,13 @@ def main(argv: list[str] | None = None) -> None:
             global_hf=not args.no_global_hf,
             uv=args.uv,
         )
+        return
+
+    if args.cmd == "fetch-data":
+        from author_set import ensure_author_set_data
+
+        ensure_author_set_data(cfg)
+        print(f"data: ready under {cfg.data.root.resolve()}", flush=True)
         return
 
     if args.cmd == "export-data":

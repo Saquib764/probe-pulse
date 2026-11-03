@@ -44,6 +44,7 @@ CONFIG_PATH = project_root() / "config.yaml"
 @dataclass(frozen=True)
 class DataSettings:
     root: Path
+    dataset_id: str
     train_csv: str
     test_csv: str
     test_fraction: float
@@ -328,7 +329,10 @@ def load_config(path: Path | None = None) -> Config:
         raise ValueError("data and train must be mappings")
 
     root_raw = data_raw.get("root")
-    if not root_raw:
+    env_data_root = os.environ.get("PROBE_PULSE_DATA_ROOT", "").strip()
+    if env_data_root:
+        root_raw = env_data_root
+    elif not root_raw:
         raise ValueError("data.root is required")
     test_fraction = float(data_raw.get("test_fraction", 0.1))
     if not 0.0 <= test_fraction < 1.0:
@@ -387,6 +391,11 @@ def load_config(path: Path | None = None) -> Config:
         lora=lora,
         data=DataSettings(
             root=_resolve(Path(str(root_raw)), base),
+            dataset_id=str(
+                data_raw.get("dataset_id")
+                or os.environ.get("PROBE_PULSE_DATASET")
+                or "saquiboye/author-set"
+            ).strip(),
             train_csv=str(data_raw.get("train_csv") or "ntl_open_pool.csv"),
             test_csv=str(data_raw.get("test_csv") or "test.csv"),
             test_fraction=test_fraction,

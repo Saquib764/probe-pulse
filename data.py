@@ -12,7 +12,9 @@ from pathlib import Path
 import torch
 from transformers import PreTrainedTokenizerBase
 
+from author_set import ensure_author_set_data
 from config import Config
+from export_ntl_open_pool import DEFAULT_PARQUET_NAME, export_ntl_open_pool
 from labels import NUM_CLASSES, model_to_index
 
 MODELS_PER_PROMPT = NUM_CLASSES
@@ -31,6 +33,28 @@ class ClassifierBatch:
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     labels: torch.Tensor
+
+
+def _missing_train_data_message(cfg: Config, train_path: Path) -> str:
+    parquet = cfg.data.root / DEFAULT_PARQUET_NAME
+    return (
+        f"missing {train_path} (and no {parquet} to export). "
+        f"Expected Hugging Face dataset {cfg.data.dataset_id!r} under {cfg.data.root} "
+        "(run `uv run gemma-author-probe fetch-data` or train to download)."
+    )
+
+
+def ensure_train_csv(cfg: Config) -> Path:
+    """Create train CSV from parquet when the pipeline/repo ships parquet only."""
+    train_path = cfg.data.root / cfg.data.train_csv
+    if train_path.is_file():
+        return train_path
+    parquet = cfg.data.root / DEFAULT_PARQUET_NAME
+    if parquet.is_file():
+        print(f"data: exporting {parquet.name} → {train_path.name}", flush=True)
+        export_ntl_open_pool(parquet, train_path)
+        return train_path
+    raise FileNotFoundError(_missing_train_data_message(cfg, train_path))
 
 
 def read_passage_csv(path: Path) -> list[PassageExample]:
@@ -53,7 +77,7 @@ def read_passage_csv(path: Path) -> list[PassageExample]:
 
 
 def read_train_csv(cfg: Config) -> list[PassageExample]:
-    return read_passage_csv(cfg.data.root / cfg.data.train_csv)
+    return read_passage_csv(ensure_train_csv(cfg))
 
 
 def read_test_csv(cfg: Config) -> list[PassageExample]:
@@ -115,6 +139,7 @@ def split_train_test(
 
 
 def load_train_test_split(cfg: Config) -> tuple[list[PassageExample], list[PassageExample]]:
+    ensure_author_set_data(cfg)
     train = read_train_csv(cfg)
     if cfg.data.test_fraction <= 0.0:
         return train, []

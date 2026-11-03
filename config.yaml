@@ -62,6 +62,7 @@ lora:
 
 data:
   root: data
+  dataset_id: saquiboye/author-set
   train_csv: ntl_open_pool.csv
   test_csv: test.csv
   test_fraction: 0.1  # share of complete prompts in test_csv used for eval
