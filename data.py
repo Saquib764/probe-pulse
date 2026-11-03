@@ -1,0 +1,410 @@
+"""Load train/test CSV; batch sampled authors on sampled prompts."""
+
+from __future__ import annotations
+
+import csv
+import random
+from collections import defaultdict
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+import torch
+from transformers import PreTrainedTokenizerBase
+
+from config import Config
+from labels import NUM_CLASSES, model_to_index
+
+MODELS_PER_PROMPT = NUM_CLASSES
+
+
+@dataclass(frozen=True)
+class PassageExample:
+    row_id: str
+    prompt_id: str
+    text: str
+    label_index: int
+
+
+@dataclass
+class ClassifierBatch:
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    labels: torch.Tensor
+
+
+def read_passage_csv(path: Path) -> list[PassageExample]:
+    if not path.is_file():
+        raise FileNotFoundError(f"missing {path}")
+    out: list[PassageExample] = []
+    with path.open(newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            out.append(
+                PassageExample(
+                    row_id=str(row["id"]),
+                    prompt_id=str(row["prompt_id"]).strip(),
+                    text=str(row["text"]).strip(),
+                    label_index=model_to_index(str(row["model"]).strip()),
+                )
+            )
+    if not out:
+        raise ValueError(f"no rows in {path}")
+    return out
+
+
+def read_train_csv(cfg: Config) -> list[PassageExample]:
+    return read_passage_csv(cfg.data.root / cfg.data.train_csv)
+
+
+def read_test_csv(cfg: Config) -> list[PassageExample]:
+    return read_passage_csv(cfg.data.root / cfg.data.test_csv)
+
+
+def _prompt_is_complete(rows: list[PassageExample]) -> bool:
+    if len(rows) != MODELS_PER_PROMPT:
+        return False
+    return len({ex.label_index for ex in rows}) == MODELS_PER_PROMPT
+
+
+def filter_complete_prompts(examples: list[PassageExample]) -> list[PassageExample]:
+    by_prompt: dict[str, list[PassageExample]] = defaultdict(list)
+    for ex in examples:
+        by_prompt[ex.prompt_id].append(ex)
+    out: list[PassageExample] = []
+    for rows in by_prompt.values():
+        if _prompt_is_complete(rows):
+            out.extend(rows)
+    return out
+
+
+def split_train_test(
+    examples: list[PassageExample],
+    *,
+    test_fraction: float,
+    seed: int,
+) -> tuple[list[PassageExample], list[PassageExample]]:
+    complete = filter_complete_prompts(examples)
+    if not complete:
+        raise ValueError("no complete prompts (need one row per model per prompt_id)")
+    by_prompt: dict[str, list[PassageExample]] = defaultdict(list)
+    for ex in complete:
+        by_prompt[ex.prompt_id].append(ex)
+    prompt_ids = sorted(by_prompt.keys())
+    if test_fraction <= 0.0:
+        if not prompt_ids:
+            raise ValueError("need at least one complete prompt")
+        train = [ex for pid in prompt_ids for ex in by_prompt[pid]]
+        return train, []
+    if len(prompt_ids) < 2:
+        raise ValueError("need at least two complete prompts for train/test split")
+    rng = random.Random(seed)
+    rng.shuffle(prompt_ids)
+    n_test = max(1, int(len(prompt_ids) * test_fraction))
+    if len(prompt_ids) - n_test < 1:
+        raise ValueError("train split needs at least one complete prompt")
+    test_pids = set(prompt_ids[:n_test])
+    train: list[PassageExample] = []
+    test: list[PassageExample] = []
+    for pid in prompt_ids:
+        rows = by_prompt[pid]
+        if pid in test_pids:
+            test.extend(rows)
+        else:
+            train.extend(rows)
+    return train, test
+
+
+def load_train_test_split(cfg: Config) -> tuple[list[PassageExample], list[PassageExample]]:
+    train = read_train_csv(cfg)
+    if cfg.data.test_fraction <= 0.0:
+        return train, []
+    _, test = split_train_test(
+        read_test_csv(cfg),
+        test_fraction=cfg.data.test_fraction,
+        seed=cfg.data.seed,
+    )
+    return train, test
+
+
+def _count_complete_prompts(examples: list[PassageExample]) -> int:
+    by_prompt: dict[str, list[PassageExample]] = defaultdict(list)
+    for ex in examples:
+        by_prompt[ex.prompt_id].append(ex)
+    return sum(1 for rows in by_prompt.values() if _prompt_is_complete(rows))
+
+
+def print_data_summary(
+    cfg: Config,
+    train_ex: list[PassageExample],
+    test_ex: list[PassageExample],
+) -> None:
+    train_path = (cfg.data.root / cfg.data.train_csv).resolve()
+    test_path = (cfg.data.root / cfg.data.test_csv).resolve()
+    train_prompts = len({ex.prompt_id for ex in train_ex})
+    complete_prompts = len(build_prompt_label_index(train_ex, require_all_models=True))
+    batch_prompts = len(
+        build_prompt_label_index(train_ex, require_all_models=cfg.data.require_all_models)
+    )
+    mode = "strict (all 18 models)" if cfg.data.require_all_models else "relaxed"
+    print(f"data: train {train_path.name}", flush=True)
+    print(
+        f"  rows={len(train_ex)} prompt_ids={train_prompts} "
+        f"batch_prompts={batch_prompts} complete_prompts={complete_prompts} mode={mode}",
+        flush=True,
+    )
+    if cfg.data.test_fraction <= 0.0:
+        print(f"data: test disabled (test_fraction=0)", flush=True)
+        return
+    try:
+        test_all = read_test_csv(cfg)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"data: test {test_path.name} unavailable ({exc})", flush=True)
+        return
+    test_all_prompts = len({ex.prompt_id for ex in test_all})
+    test_complete = _count_complete_prompts(test_all)
+    test_prompts = len({ex.prompt_id for ex in test_ex})
+    print(f"data: test {test_path.name}", flush=True)
+    print(
+        f"  source rows={len(test_all)} prompt_ids={test_all_prompts} "
+        f"complete_prompts={test_complete}",
+        flush=True,
+    )
+    print(
+        f"  eval holdout test_fraction={cfg.data.test_fraction} seed={cfg.data.seed} "
+        f"→ rows={len(test_ex)} prompt_ids={test_prompts}",
+        flush=True,
+    )
+
+
+def _raw_prompt_label_index(examples: list[PassageExample]) -> dict[str, dict[int, int]]:
+    """prompt_id -> label_index -> first row index (repeated model keeps first row)."""
+    index: dict[str, dict[int, int]] = {}
+    for i, ex in enumerate(examples):
+        slot = index.setdefault(ex.prompt_id, {})
+        label = int(ex.label_index)
+        if label not in slot:
+            slot[label] = i
+    return index
+
+
+def build_prompt_label_index(
+    examples: list[PassageExample],
+    *,
+    require_all_models: bool = True,
+) -> dict[str, dict[int, int]]:
+    """prompt_id -> label_index -> first row index for batch sampling."""
+    index = _raw_prompt_label_index(examples)
+    if require_all_models:
+        return {
+            pid: labels
+            for pid, labels in index.items()
+            if len(labels) == MODELS_PER_PROMPT
+        }
+    return index
+
+
+def _row_index_for_prompt_label(
+    by_prompt: dict[str, dict[int, int]],
+    prompt_id: str,
+    label: int,
+    rng: random.Random,
+    *,
+    require_all_models: bool,
+) -> int:
+    slot = by_prompt[prompt_id]
+    if label in slot:
+        return slot[label]
+    if require_all_models:
+        raise KeyError(f"prompt {prompt_id!r} missing model label {label}")
+    present = list(slot.keys())
+    return slot[rng.choice(present)]
+
+
+def iter_prompt_batches(
+    examples: list[PassageExample],
+    *,
+    batch_size: int,
+    prompt_count: int,
+    seed: int,
+    require_all_models: bool = True,
+    epoch: int = 0,
+) -> Iterator[list[int]]:
+    """Sample authors_per_batch models and prompt_count prompts; one row per pair.
+
+    authors_per_batch = batch_size / prompt_count. Only (prompt, author) cells for
+    the sampled sets are included, not every model on those prompts.
+    """
+    if prompt_count < 1:
+        raise ValueError("prompt_count must be >= 1")
+    if batch_size < 1 or batch_size % prompt_count != 0:
+        raise ValueError("batch_size must be a positive multiple of prompt_count")
+    authors_per_batch = batch_size // prompt_count
+    if authors_per_batch > MODELS_PER_PROMPT:
+        raise ValueError(
+            f"batch_size / prompt_count is {authors_per_batch}; "
+            f"each prompt has {MODELS_PER_PROMPT} models"
+        )
+    by_prompt = build_prompt_label_index(
+        examples, require_all_models=require_all_models
+    )
+    prompt_ids = sorted(by_prompt.keys())
+    if len(prompt_ids) < prompt_count:
+        return
+    rng = random.Random(seed + int(epoch) * 1_000_003)
+    rng.shuffle(prompt_ids)
+    n_groups = len(prompt_ids) // prompt_count
+    prompt_ids = prompt_ids[: n_groups * prompt_count]
+    all_models = list(range(MODELS_PER_PROMPT))
+    for group_i in range(n_groups):
+        group = prompt_ids[group_i * prompt_count : (group_i + 1) * prompt_count]
+        authors = rng.sample(all_models, authors_per_batch)
+        rows: list[int] = []
+        for pid in group:
+            for label in authors:
+                rows.append(
+                    _row_index_for_prompt_label(
+                        by_prompt,
+                        pid,
+                        label,
+                        rng,
+                        require_all_models=require_all_models,
+                    )
+                )
+        yield rows
+
+
+def count_prompt_batches(
+    examples: list[PassageExample],
+    *,
+    batch_size: int,
+    prompt_count: int,
+    require_all_models: bool = True,
+) -> int:
+    if batch_size % prompt_count != 0:
+        raise ValueError("batch_size must be a positive multiple of prompt_count")
+    n_prompts = len(
+        build_prompt_label_index(examples, require_all_models=require_all_models)
+    )
+    return n_prompts // prompt_count
+
+
+class PromptBatchSampler(torch.utils.data.Sampler[list[int]]):
+    """Random author and prompt samples; batch_size = prompt_count × authors_per_batch."""
+
+    def __init__(
+        self,
+        examples: list[PassageExample],
+        *,
+        batch_size: int,
+        prompt_count: int,
+        seed: int,
+        require_all_models: bool = True,
+    ) -> None:
+        if prompt_count < 1:
+            raise ValueError("prompt_count must be >= 1")
+        if batch_size < 1 or batch_size % prompt_count != 0:
+            raise ValueError("batch_size must be a positive multiple of prompt_count")
+        self._examples = examples
+        self._batch_size = batch_size
+        self._prompt_count = prompt_count
+        self._seed = seed
+        self._require_all_models = require_all_models
+        self._authors_per_batch = batch_size // prompt_count
+        self._num_batches = count_prompt_batches(
+            examples,
+            batch_size=batch_size,
+            prompt_count=prompt_count,
+            require_all_models=require_all_models,
+        )
+        if self._num_batches < 1:
+            found = len(
+                build_prompt_label_index(
+                    examples, require_all_models=require_all_models
+                )
+            )
+            if require_all_models:
+                msg = (
+                    f"need at least {prompt_count} prompts with all {MODELS_PER_PROMPT} models; "
+                    f"found {found}"
+                )
+            else:
+                msg = f"need at least {prompt_count} prompts with any model; found {found}"
+            raise ValueError(msg)
+        self._batches: list[list[int]] = []
+        self.set_epoch(0)
+
+    def __len__(self) -> int:
+        return self._num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        self._batches = list(
+            iter_prompt_batches(
+                self._examples,
+                batch_size=self._batch_size,
+                prompt_count=self._prompt_count,
+                seed=self._seed,
+                require_all_models=self._require_all_models,
+                epoch=int(epoch),
+            )
+        )
+
+    def __iter__(self):
+        yield from self._batches
+
+
+class PassageDataset(torch.utils.data.Dataset):
+    def __init__(self, examples: list[PassageExample]) -> None:
+        self._examples = examples
+
+    def __len__(self) -> int:
+        return len(self._examples)
+
+    def __getitem__(self, index: int) -> PassageExample:
+        return self._examples[int(index)]
+
+
+def prepare_tokenizer(tokenizer: PreTrainedTokenizerBase, *, max_len: int) -> PreTrainedTokenizerBase:
+    if tokenizer.pad_token_id is None:
+        eos_id = tokenizer.eos_token_id
+        if eos_id is None:
+            raise ValueError("tokenizer needs pad_token_id or eos_token_id")
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.model_max_length = max_len
+    tokenizer.padding_side = "right"
+    return tokenizer
+
+
+class PassageCollator:
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        *,
+        max_len: int,
+        probe_slots: int = 0,
+    ) -> None:
+        self.tokenizer = tokenizer
+        if probe_slots < 0:
+            raise ValueError("probe_slots must be >= 0")
+        self.max_len = max_len - probe_slots
+
+    def __call__(self, examples: list[PassageExample]) -> ClassifierBatch:
+        texts = []
+        for ex in examples:
+            body = ex.text.strip()
+            if not body:
+                raise ValueError(f"row {ex.row_id} has empty text")
+            texts.append(body)
+        encoded = self.tokenizer(
+            texts,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=self.max_len,
+            padding=True,
+            return_tensors="pt",
+        )
+        labels = torch.tensor([ex.label_index for ex in examples], dtype=torch.long)
+        return ClassifierBatch(
+            input_ids=encoded["input_ids"],
+            attention_mask=encoded["attention_mask"],
+            labels=labels,
+        )
