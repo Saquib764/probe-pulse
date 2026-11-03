@@ -1,4 +1,4 @@
-"""Load config.yaml for the frozen-Qwen3 probe authorship classifier."""
+"""Load config.yaml for the frozen-backbone probe authorship classifier."""
 
 from __future__ import annotations
 
@@ -103,6 +103,7 @@ class TrainSettings:
     session_dir: Path
     init_checkpoint: Path | None
     resume: bool
+    device: str
     epochs: int
     batch_size: int
     prompt_count: int
@@ -133,6 +134,16 @@ def _resolve(path: Path, base: Path) -> Path:
     return path if path.is_absolute() else (base / path).resolve()
 
 
+def _sync_hub_constants() -> None:
+    """huggingface_hub reads HF_HUB_DISABLE_XET once at import; patch if already loaded."""
+    try:
+        import huggingface_hub.constants as hub_constants
+    except ImportError:
+        return
+    value = os.environ.get("HF_HUB_DISABLE_XET", "")
+    hub_constants.HF_HUB_DISABLE_XET = value.upper() in {"1", "ON", "YES", "TRUE"}
+
+
 def apply_hf_cache(path: Path) -> Path:
     cache = path.resolve()
     hub_cache = cache / "hub"
@@ -141,8 +152,18 @@ def apply_hf_cache(path: Path) -> Path:
     os.environ["HF_HOME"] = str(cache)
     os.environ["HF_HUB_CACHE"] = str(hub_cache)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    _sync_hub_constants()
     return cache
+
+
+def bootstrap_hub_env(path: Path | None = None) -> Path:
+    """Apply hf_cache from config.yaml before transformers / huggingface_hub import."""
+    config_path = (path or CONFIG_PATH).resolve()
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"expected mapping in {config_path}")
+    return apply_hf_cache(_resolve(Path(raw.get("hf_cache") or "../hf_cache"), config_path.parent))
 
 
 def hub_cache_dir(cfg: Config) -> Path:
@@ -351,6 +372,10 @@ def load_config(path: Path | None = None) -> Config:
     init_checkpoint = _resolve(Path(str(init_raw)), base) if init_raw else None
     resume = bool(checkpoint_raw.get("resume", False))
 
+    device = str(train_raw.get("device") or "auto").strip().lower()
+    if device not in ("auto", "cpu", "cuda", "mps"):
+        raise ValueError("train.device must be auto, cpu, cuda, or mps")
+
     return Config(
         model_id=model_id,
         hf_cache=apply_hf_cache(_resolve(Path(raw.get("hf_cache") or "../hf_cache"), base)),
@@ -373,6 +398,7 @@ def load_config(path: Path | None = None) -> Config:
             session_dir=_resolve(Path(train_raw.get("session_dir") or "training_session"), base),
             init_checkpoint=init_checkpoint,
             resume=resume,
+            device=device,
             epochs=epochs,
             batch_size=batch_size,
             prompt_count=prompt_count,

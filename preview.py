@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-import torch
+from config import Config, bootstrap_hub_env, load_config
 
-from config import Config, load_config
+bootstrap_hub_env()
+
+import torch
 from device import get_device
 from labels import MODEL_NAMES, NUM_CLASSES
 from lora import lora_params_for_block
@@ -39,11 +41,11 @@ def run(
     build_from_hub: bool = True,
 ) -> ProbeClassifier | None:
     cfg = cfg or load_config()
-    device = device or get_device(announce=True)
+    device = device or get_device(announce=True, prefer=cfg.train.device)
     train = cfg.train
     n_taps = len(cfg.tap_layers)
 
-    print("\n=== Name That LLM (Qwen3 blocks + probe + 18-class head) ===\n")
+    print("\n=== Name That LLM (frozen backbone + probe + 18-class head) ===\n")
     print(f"model_id:       {cfg.model_id}")
     print(
         f"max_len:        {cfg.max_len}  "

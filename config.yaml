@@ -1,13 +1,15 @@
-# Name That LLM — Qwen3 + learnable probes, tiered LoRA, multi-layer head.
-# Qwen3-0.6B-Base and Qwen3-1.7B share this 28-block map. 4B/8B have 36 blocks,
+# Name That LLM — frozen LM + learnable probes, tiered LoRA, multi-layer head.
+# Qwen3-0.6B-Base and Qwen3-1.7B share the 28-block tap map below. 4B/8B have 36 blocks,
 # 14B has 40, 32B has 64; retarget tap_layers and lora.*.layers for those.
 
-model_id: Qwen/Qwen3-0.6B-Base
+model_id: google/gemma-3-270m
+# model_id: Qwen/Qwen3-0.6B-Base
 # model_id: Qwen/Qwen3-8B-Base
 hf_cache: ../hf_cache
 max_len: 512
-# 1-indexed blocks. Qwen3-0.6B-Base has 28, all full attention.
-tap_layers: [4, 8, 12, 16, 20, 24, 28]
+# 1-indexed blocks. Gemma-3-270m has 18.
+tap_layers: [3, 6, 9, 12, 15, 18]
+# tap_layers: [4, 8, 12, 16, 20, 24, 28]
 # tap_layers: [4, 8, 12, 16, 20, 24, 28, 32, 36]
 
 probe:
@@ -31,28 +33,28 @@ contrast:
 lora:
   lora_1:
     enabled: false
-    layers: [1, 2, 3, 4, 5, 6, 7]
+    layers: [1, 2, 3, 4, 5]
     r: 2
     alpha: 4
     dropout: 0.05
     lr: 1.0e-6
   lora_2:
     enabled: false
-    layers: [8, 9, 10, 11, 12, 13, 14]
+    layers: [6, 7, 8, 9, 10]
     r: 2
     alpha: 4
     dropout: 0.05
     lr: 1.0e-6
   lora_3:
     enabled: false
-    layers: [15, 16, 17, 18, 19, 20, 21]
+    layers: [11, 12, 13, 14]
     r: 2
     alpha: 4
     dropout: 0.05
     lr: 1.0e-6
   lora_4:
     enabled: false
-    layers: [22, 23, 24, 25, 26, 27, 28]
+    layers: [15, 16, 17, 18]
     r: 2
     alpha: 4
     dropout: 0.05
@@ -70,8 +72,9 @@ data:
 train:
   checkpoint:
     init:
-    resume: true
+    resume: false  # set true only when resuming the same backbone checkpoint
   session_dir: training_session
+  device: auto  # auto | cpu | mps | cuda (use torch 2.6.x on macOS; 2.15 breaks MPS linear)
   epochs: 100
   batch_size: 8
   prompt_count: 2  # authors per batch = batch_size / prompt_count

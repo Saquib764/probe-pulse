@@ -10,6 +10,10 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+from config import bootstrap_hub_env
+
+bootstrap_hub_env()
+
 import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
@@ -344,7 +348,7 @@ def run_test(
         flush=True,
     )
     print(f"checkpoint: {path}", flush=True)
-    device = device or get_device(announce=True)
+    device = device or get_device(announce=True, prefer=cfg.train.device)
     model = _load_checkpoint(cfg, path)
     model.to(device)
     evaluate_model(model, test_ex, device, cfg.train.batch_size)

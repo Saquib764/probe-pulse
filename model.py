@@ -1,4 +1,4 @@
-"""Qwen3 blocks + learnable probe tokens + multi-layer linear head."""
+"""Frozen transformer blocks + learnable probe tokens + multi-layer linear head."""
 
 from __future__ import annotations
 
@@ -199,7 +199,8 @@ class ProbeClassifier(nn.Module):
                     hidden, probe_mask, num_probes=self.num_probes
                 )
                 pooled.append(norm(probes_flat))
-            return torch.cat(pooled, dim=-1)
+            # MPS linear chokes on strided views after cat; keep one contiguous buffer.
+            return torch.cat(pooled, dim=-1).contiguous()
         finally:
             self._captured.clear()
 

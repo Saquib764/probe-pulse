@@ -12,6 +12,10 @@ from pathlib import Path
 os.environ.setdefault("KMP_HANDLE_SIGNALS", "FALSE")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+from config import bootstrap_hub_env
+
+bootstrap_hub_env()
+
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -362,7 +366,7 @@ def run(
     max_steps: int | None = None,
 ) -> None:
     cfg = cfg or load_config()
-    device = device or get_device(announce=True)
+    device = device or get_device(announce=True, prefer=cfg.train.device)
     train_ex, test_ex = load_train_test_split(cfg)
     print_data_summary(cfg, train_ex, test_ex)
     print(f"train: loading {cfg.model_id}", flush=True)

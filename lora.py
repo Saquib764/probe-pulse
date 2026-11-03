@@ -21,7 +21,7 @@ LORA_SUFFIXES = (
     "mlp.down_proj",
 )
 
-LORA_ADAPTER_NAME = "qwen_probe"
+LORA_ADAPTER_NAME = "probe_lora"
 _LAYER_IN_NAME = re.compile(r"\.layers\.(\d+)\.")
 
 

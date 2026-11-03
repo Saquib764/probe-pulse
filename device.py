@@ -13,7 +13,22 @@ _device: torch.device | None = None
 _announced = False
 
 
-def _choose_device() -> torch.device:
+def _choose_device(forced: str | None = None) -> torch.device:
+    name = (forced or os.environ.get("PROBE_PULSE_DEVICE") or "").strip().lower()
+    if name == "cpu":
+        return torch.device("cpu")
+    if name == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("train.device or PROBE_PULSE_DEVICE=cuda but CUDA is unavailable")
+        return torch.device("cuda")
+    if name == "mps":
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None or not mps.is_available():
+            raise RuntimeError("train.device or PROBE_PULSE_DEVICE=mps but MPS is unavailable")
+        return torch.device("mps")
+    if name not in ("", "auto"):
+        raise ValueError(f"unknown device {name!r}; use auto, cpu, cuda, or mps")
+
     if torch.cuda.is_available():
         return torch.device("cuda")
     mps = getattr(torch.backends, "mps", None)
@@ -22,10 +37,10 @@ def _choose_device() -> torch.device:
     return torch.device("cpu")
 
 
-def get_device(*, announce: bool = False) -> torch.device:
+def get_device(*, announce: bool = False, prefer: str | None = None) -> torch.device:
     global _device, _announced
     if _device is None:
-        _device = _choose_device()
+        _device = _choose_device(prefer)
     if announce and not _announced:
         print(f"device: {_device}", flush=True)
         _announced = True

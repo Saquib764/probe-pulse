@@ -9,13 +9,13 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import argparse
 from pathlib import Path
 
-from config import CONFIG_PATH, load_config
+from config import CONFIG_PATH, bootstrap_hub_env, load_config
 from device import get_device
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Frozen Qwen3 + probe token authorship classifier (18 classes)"
+        description="Frozen LM backbone + probe token authorship classifier (18 classes)"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Skip hub download; print config/head summary only",
     )
 
-    p_train = sub.add_parser("train", help="Train probe, head, and Qwen3 blocks on train.csv")
+    p_train = sub.add_parser("train", help="Train probe, head, and optional LoRA on train.csv")
     p_train.add_argument("--config", type=Path, default=CONFIG_PATH)
     p_train.add_argument(
         "--max-steps",
@@ -47,8 +47,37 @@ def main(argv: list[str] | None = None) -> None:
     p_export.add_argument("--config", type=Path, default=CONFIG_PATH)
     p_export.add_argument("--parquet", type=Path, default=None)
     p_export.add_argument("--csv", type=Path, default=None)
+
+    p_clean = sub.add_parser(
+        "clean-cache",
+        help="Free disk: failed hub downloads, xet scratch, pycache; optional uv package cache",
+    )
+    p_clean.add_argument("--config", type=Path, default=CONFIG_PATH)
+    p_clean.add_argument(
+        "--no-global-hf",
+        action="store_true",
+        help="Only clean project hf_cache from config.yaml, not ~/.cache/huggingface",
+    )
+    p_clean.add_argument(
+        "--uv",
+        action="store_true",
+        help="Also run uv cache clean (~GB; wheels re-download on next uv run)",
+    )
+
     args = parser.parse_args(argv)
+    bootstrap_hub_env(args.config)
     cfg = load_config(args.config)
+
+    if args.cmd == "clean-cache":
+        from clean_cache import run as run_clean_cache
+
+        run_clean_cache(
+            cfg,
+            scratch=True,
+            global_hf=not args.no_global_hf,
+            uv=args.uv,
+        )
+        return
 
     if args.cmd == "export-data":
         from export_ntl_open_pool import DEFAULT_PARQUET_NAME, main as export_main
@@ -58,7 +87,7 @@ def main(argv: list[str] | None = None) -> None:
         export_main(parquet, csv_out)
         return
 
-    device = get_device(announce=True)
+    device = get_device(announce=True, prefer=cfg.train.device)
 
     if args.cmd == "preview":
         from preview import run as run_preview
