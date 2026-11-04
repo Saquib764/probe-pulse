@@ -231,7 +231,7 @@ def build_model(cfg: Config) -> ProbeClassifier:
     inner = _text_stack(
         AutoModel.from_pretrained(
             cfg.model_id,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
             attn_implementation="eager",
             low_cpu_mem_usage=True,
             **kw,
