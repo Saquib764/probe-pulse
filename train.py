@@ -630,7 +630,7 @@ def run(
             optimizer,
             scheduler,
             progress=None,
-            writer,
+            writer=writer,
         )
     if writer is not None:
         writer.flush()
