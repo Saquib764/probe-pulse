@@ -75,6 +75,7 @@ train:
     init:
     resume: false  # set true only when resuming the same backbone checkpoint
   session_dir: training_session
+  log_dir: training_session/tb  # TensorBoard scalars; empty disables logging
   device: auto  # auto | cpu | mps | cuda (use torch 2.6.x on macOS; 2.15 breaks MPS linear)
   epochs: 100
   batch_size: 8

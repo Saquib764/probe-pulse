@@ -7,6 +7,10 @@ import os
 import shutil
 import signal
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
 
 # Must be set before torch loads OpenMP, which otherwise swallows Ctrl+C.
 os.environ.setdefault("KMP_HANDLE_SIGNALS", "FALSE")
@@ -195,6 +199,24 @@ def _save_training_state(
     return path
 
 
+def _prepare_log_dir(log_dir: Path, *, resume: bool) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if resume:
+        return
+    for path in log_dir.glob("events.out.tfevents.*"):
+        path.unlink(missing_ok=True)
+
+
+def _open_summary_writer(cfg: Config) -> SummaryWriter | None:
+    log_dir = cfg.train.log_dir
+    if log_dir is None:
+        return None
+    from torch.utils.tensorboard import SummaryWriter
+
+    _prepare_log_dir(log_dir, resume=cfg.train.resume)
+    return SummaryWriter(log_dir=str(log_dir), flush_secs=10)
+
+
 def _save_and_test(
     model: ProbeClassifier,
     cfg: Config,
@@ -205,6 +227,7 @@ def _save_and_test(
     optimizer: AdamW,
     scheduler: LambdaLR,
     progress: tqdm | None,
+    writer: SummaryWriter | None,
 ) -> None:
     from run_test import evaluate_model
 
@@ -217,7 +240,9 @@ def _save_and_test(
         tqdm.write(message)
     else:
         print(message, flush=True)
-    evaluate_model(model, test_ex, device, cfg.train.batch_size, step=step)
+    evaluate_model(
+        model, test_ex, device, cfg.train.batch_size, step=step, writer=writer
+    )
     if progress is not None:
         progress.refresh()
 
@@ -489,6 +514,9 @@ def run(
     saved_step = step if pending_state is not None else -1
     contrastive_weight = cfg.contrast.weight
     checked_grads = False
+    writer = _open_summary_writer(cfg)
+    if writer is not None and cfg.train.log_dir is not None:
+        print(f"train: tensorboard → {cfg.train.log_dir.resolve()}", flush=True)
     progress = tqdm(total=total_steps, initial=step, desc="train", unit="step")
     progress.refresh()
     for epoch in range(start_epoch, cfg.train.epochs):
@@ -541,6 +569,11 @@ def run(
             else:
                 postfix = f"loss={running_loss:.4f} acc={running_acc:.3f} epoch={epoch + 1}"
             progress.set_postfix_str(postfix)
+            if writer is not None:
+                writer.add_scalar("train/loss", running_loss, step + 1)
+                writer.add_scalar("train/accuracy", running_acc, step + 1)
+                if use_contrastive and ctr_loss is not None:
+                    writer.add_scalar("train/contrastive", float(ctr_loss.detach()), step + 1)
             if not checked_grads:
                 _assert_step_grads(model, cfg, use_contrastive=use_contrastive)
                 checked_grads = True
@@ -554,13 +587,33 @@ def run(
             progress.update(1)
             progress.set_postfix_str(postfix)
             if step % cfg.train.save_steps == 0:
+                if writer is not None:
+                    writer.flush()
                 _save_and_test(
-                    model, cfg, test_ex, device, step, epoch, optimizer, scheduler, progress
+                    model,
+                    cfg,
+                    test_ex,
+                    device,
+                    step,
+                    epoch,
+                    optimizer,
+                    scheduler,
+                    progress,
+                    writer,
                 )
                 saved_step = step
         if epoch_done and step > saved_step:
             _save_and_test(
-                model, cfg, test_ex, device, step, epoch, optimizer, scheduler, progress
+                model,
+                cfg,
+                test_ex,
+                device,
+                step,
+                epoch,
+                optimizer,
+                scheduler,
+                progress,
+                writer,
             )
             saved_step = step
     progress.close()
@@ -577,7 +630,11 @@ def run(
             optimizer,
             scheduler,
             progress=None,
+            writer,
         )
+    if writer is not None:
+        writer.flush()
+        writer.close()
     print(f"done → {(cfg.train.session_dir / CHECKPOINT_NAME).resolve()}", flush=True)
 
 

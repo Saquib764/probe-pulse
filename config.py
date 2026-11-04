@@ -102,6 +102,7 @@ class LoraSettings:
 @dataclass(frozen=True)
 class TrainSettings:
     session_dir: Path
+    log_dir: Path | None
     init_checkpoint: Path | None
     resume: bool
     device: str
@@ -380,6 +381,13 @@ def load_config(path: Path | None = None) -> Config:
     if device not in ("auto", "cpu", "cuda", "mps"):
         raise ValueError("train.device must be auto, cpu, cuda, or mps")
 
+    log_dir_raw = train_raw.get("log_dir")
+    log_dir: Path | None
+    if log_dir_raw is None or not str(log_dir_raw).strip():
+        log_dir = None
+    else:
+        log_dir = _resolve(Path(str(log_dir_raw).strip()), base)
+
     return Config(
         model_id=model_id,
         hf_cache=apply_hf_cache(_resolve(Path(raw.get("hf_cache") or "../hf_cache"), base)),
@@ -405,6 +413,7 @@ def load_config(path: Path | None = None) -> Config:
         ),
         train=TrainSettings(
             session_dir=_resolve(Path(train_raw.get("session_dir") or "training_session"), base),
+            log_dir=log_dir,
             init_checkpoint=init_checkpoint,
             resume=resume,
             device=device,

@@ -34,6 +34,15 @@ from train import CHECKPOINT_NAME
 
 
 @dataclass(frozen=True)
+class EvalMetrics:
+    accuracy: float
+    top3_accuracy: float
+    balanced_accuracy: float
+    clustering_accuracy: float
+    clustering_balanced_accuracy: float
+
+
+@dataclass(frozen=True)
 class ScoredPrediction:
     row_id: str
     label_index: int
@@ -250,6 +259,31 @@ def _print_predicted_count_std(pred: list[int]) -> None:
     )
 
 
+def _summarize_metrics(
+    predictions: list[ScoredPrediction], examples: list[PassageExample]
+) -> EvalMetrics | None:
+    if not predictions:
+        return None
+    gold = [int(ex.label_index) for ex in examples]
+    pred = [int(p.label_index) for p in predictions]
+    labeled = len(examples)
+    correct = sum(1 for g, p in zip(gold, pred, strict=True) if g == p)
+    top3_hit = sum(
+        1
+        for ex, p in zip(examples, predictions, strict=True)
+        if int(ex.label_index) in p.top3_indices
+    )
+    cluster = [int(p.cluster_label_index) for p in predictions]
+    cluster_correct = sum(1 for g, c in zip(gold, cluster, strict=True) if g == c)
+    return EvalMetrics(
+        accuracy=correct / labeled,
+        top3_accuracy=top3_hit / labeled,
+        balanced_accuracy=balanced_accuracy(gold, pred),
+        clustering_accuracy=cluster_correct / labeled,
+        clustering_balanced_accuracy=balanced_accuracy(gold, cluster),
+    )
+
+
 def _print_summary(predictions: list[ScoredPrediction], examples: list[PassageExample]) -> None:
     print("\n=== Whole passage (Qwen3 probe) ===", flush=True)
     print(f"rows: {len(predictions)}", flush=True)
@@ -309,6 +343,15 @@ def _print_summary(predictions: list[ScoredPrediction], examples: list[PassageEx
     print(flush=True)
 
 
+def _log_eval_metrics(writer, step: int, metrics: EvalMetrics) -> None:
+    writer.add_scalar("eval/accuracy", metrics.accuracy, step)
+    writer.add_scalar("eval/top3_accuracy", metrics.top3_accuracy, step)
+    writer.add_scalar("eval/balanced_accuracy", metrics.balanced_accuracy, step)
+    writer.add_scalar("eval/clustering_accuracy", metrics.clustering_accuracy, step)
+    writer.add_scalar("eval/clustering_balanced_accuracy", metrics.clustering_balanced_accuracy, step)
+    writer.flush()
+
+
 def evaluate_model(
     model: ProbeClassifier,
     examples: list[PassageExample],
@@ -316,10 +359,11 @@ def evaluate_model(
     batch_size: int,
     *,
     step: int | None = None,
-) -> None:
+    writer=None,
+) -> EvalMetrics | None:
     if not examples:
         print("run-test: test split is empty; skipped", flush=True)
-        return
+        return None
     n_prompts = len({ex.prompt_id for ex in examples})
     step_bit = f"step {step} | " if step is not None else ""
     print(
@@ -329,7 +373,11 @@ def evaluate_model(
     was_training = model.training
     preds = _predict(model, examples, device, batch_size)
     _print_summary(preds, examples)
+    metrics = _summarize_metrics(preds, examples)
+    if writer is not None and metrics is not None and step is not None:
+        _log_eval_metrics(writer, step, metrics)
     model.train(was_training)
+    return metrics
 
 
 def run_test(
