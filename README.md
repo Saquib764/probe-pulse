@@ -28,7 +28,7 @@ uv run gemma-author-probe clean-cache
 
 `export-data` writes `ntl_open_pool.parquet` out to the train CSV. Training itself reads CSV only.
 
-`train.device` is `auto`, `cpu`, `mps`, or `cuda`. On macOS stay on torch 2.6.x; 2.15 breaks MPS linear. `PYTORCH_ENABLE_MPS_FALLBACK` is set by the CLI.
+`train.device` is `auto`, `cpu`, `mps`, or `cuda`. PyTorch is installed via uv on macOS only (`torch>=2.6.0`; avoid 2.15 on MPS). On Linux GPU runners (e.g. Runpod), use the container’s PyTorch/CUDA stack—do not pin a pip torch version for those runs. `PYTORCH_ENABLE_MPS_FALLBACK` is set by the CLI.
 
 ## Model
 
